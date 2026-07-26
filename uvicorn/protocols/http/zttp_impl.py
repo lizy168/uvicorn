@@ -433,7 +433,7 @@ class RequestResponseCycle:
 
             bodyless = self.scope["method"] == "HEAD" or status in (204, 304) or status < 200
             has_content_length = False
-            has_transfer_encoding = False
+            transfer_codings: list[bytes] = []
             for name, value in headers:
                 name = name.lower()
                 if name == b"content-length":
@@ -443,22 +443,24 @@ class RequestResponseCycle:
                     # zttp frames the body itself as soon as a transfer-coding is
                     # declared, whatever the codings are, so any value here means
                     # we must not do Content-Length accounting on the body.
-                    has_transfer_encoding = True
+                    transfer_codings.extend(token.strip() for token in value.lower().split(b","))
                     self.chunked_encoding = True
                 elif name == b"connection" and _has_token(value, b"close"):
                     self.keep_alive = False
 
             # A response carrying both Content-Length and Transfer-Encoding is
             # a framing conflict that zttp rejects, so drop the Content-Length.
-            if has_transfer_encoding and has_content_length:
+            if transfer_codings and has_content_length:
                 headers = [(name, value) for name, value in headers if name.lower() != b"content-length"]
                 has_content_length = False
                 self.expected_content_length = 0
 
             # zttp refuses to frame the body unless the response declares
-            # Content-Length or Transfer-Encoding, so add chunked encoding
-            # ourselves when the application provides neither.
-            if not bodyless and not has_transfer_encoding and not has_content_length:
+            # Content-Length or Transfer-Encoding, and it always frames it as
+            # chunked, so make sure `chunked` is declared. An extra header line
+            # extends the transfer-coding list, keeping `chunked` last.
+            needs_chunked = b"chunked" not in transfer_codings if transfer_codings else not has_content_length
+            if not bodyless and needs_chunked:
                 self.chunked_encoding = True
                 headers = headers + [(b"transfer-encoding", b"chunked")]
 

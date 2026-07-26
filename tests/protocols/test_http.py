@@ -26,13 +26,6 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     skip_if_no_httptools = pytest.mark.skipif(True, reason="httptools is not installed")
 
-try:
-    from uvicorn.protocols.http.zttp_impl import ZttpProtocol
-
-    skip_if_no_zttp = pytest.mark.skipif(False, reason="zttp is installed")
-except ModuleNotFoundError:  # pragma: no cover
-    skip_if_no_zttp = pytest.mark.skipif(True, reason="zttp is not installed")
-
 if TYPE_CHECKING:
     from uvicorn.protocols.http.httptools_impl import HttpToolsProtocol
     from uvicorn.protocols.websockets.websockets_sansio_impl import WebSocketsSansIOProtocol
@@ -484,9 +477,11 @@ async def test_chunked_encoding_head_request(http_protocol_cls: type[HTTPProtoco
     assert not protocol.transport.is_closing()
 
 
-@skip_if_no_zttp
 async def test_chunked_encoding_multiple_transfer_codings():
-    """A `chunked` coding declared alongside others must not be duplicated."""
+    """zttp always chunk-frames the body, so `chunked` must be declared exactly once, last."""
+    pytest.importorskip("zttp")
+    from uvicorn.protocols.http.zttp_impl import ZttpProtocol
+
     app = Response(b"Hello, world!", status_code=200, headers={"transfer-encoding": "gzip, chunked"})
 
     protocol = get_connected_protocol(app, ZttpProtocol)
@@ -498,9 +493,27 @@ async def test_chunked_encoding_multiple_transfer_codings():
     assert not protocol.transport.is_closing()
 
 
-@skip_if_no_zttp
+async def test_chunked_encoding_appended_to_transfer_codings():
+    """A transfer-coding list without `chunked` gets it appended, as a trailing coding."""
+    pytest.importorskip("zttp")
+    from uvicorn.protocols.http.zttp_impl import ZttpProtocol
+
+    app = Response(b"Hello, world!", status_code=200, headers={"transfer-encoding": "gzip"})
+
+    protocol = get_connected_protocol(app, ZttpProtocol)
+    protocol.data_received(SIMPLE_GET_REQUEST)
+    await protocol.loop.run_one()
+    assert b"HTTP/1.1 200 OK" in protocol.transport.buffer
+    assert b"transfer-encoding: gzip\r\ntransfer-encoding: chunked\r\n" in protocol.transport.buffer
+    assert b"content-length" not in protocol.transport.buffer.lower()
+    assert b"0\r\n\r\n" in protocol.transport.buffer
+
+
 async def test_connection_close_within_multiple_tokens():
     """A `close` token in a multi-valued `Connection` header must close the connection."""
+    pytest.importorskip("zttp")
+    from uvicorn.protocols.http.zttp_impl import ZttpProtocol
+
     app = Response(b"Hello, world!", status_code=200, headers={"connection": "keep-alive, close"})
 
     protocol = get_connected_protocol(app, ZttpProtocol)
