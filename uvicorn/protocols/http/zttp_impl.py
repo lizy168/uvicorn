@@ -26,6 +26,11 @@ from uvicorn.protocols.utils import get_client_addr, get_local_addr, get_path_wi
 from uvicorn.server import ServerState
 
 
+def _has_token(value: bytes, token: bytes) -> bool:
+    """Check for `token` in a comma-separated list header value."""
+    return any(item.strip() == token for item in value.lower().split(b","))
+
+
 class ZttpProtocol(asyncio.Protocol):
     def __init__(
         self,
@@ -428,19 +433,24 @@ class RequestResponseCycle:
 
             bodyless = self.scope["method"] == "HEAD" or status in (204, 304) or status < 200
             has_content_length = False
+            has_transfer_encoding = False
             for name, value in headers:
                 name = name.lower()
                 if name == b"content-length":
                     has_content_length = True
                     self.expected_content_length = int(value.decode())
-                elif name == b"transfer-encoding" and value.lower() == b"chunked":
+                elif name == b"transfer-encoding":
+                    # zttp frames the body itself as soon as a transfer-coding is
+                    # declared, whatever the codings are, so any value here means
+                    # we must not do Content-Length accounting on the body.
+                    has_transfer_encoding = True
                     self.chunked_encoding = True
-                elif name == b"connection" and value.lower() == b"close":
+                elif name == b"connection" and _has_token(value, b"close"):
                     self.keep_alive = False
 
             # A response carrying both Content-Length and Transfer-Encoding is
             # a framing conflict that zttp rejects, so drop the Content-Length.
-            if self.chunked_encoding and has_content_length:
+            if has_transfer_encoding and has_content_length:
                 headers = [(name, value) for name, value in headers if name.lower() != b"content-length"]
                 has_content_length = False
                 self.expected_content_length = 0
@@ -448,7 +458,7 @@ class RequestResponseCycle:
             # zttp refuses to frame the body unless the response declares
             # Content-Length or Transfer-Encoding, so add chunked encoding
             # ourselves when the application provides neither.
-            if not bodyless and not self.chunked_encoding and not has_content_length:
+            if not bodyless and not has_transfer_encoding and not has_content_length:
                 self.chunked_encoding = True
                 headers = headers + [(b"transfer-encoding", b"chunked")]
 

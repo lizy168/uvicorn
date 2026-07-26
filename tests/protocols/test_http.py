@@ -26,6 +26,13 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     skip_if_no_httptools = pytest.mark.skipif(True, reason="httptools is not installed")
 
+try:
+    from uvicorn.protocols.http.zttp_impl import ZttpProtocol
+
+    skip_if_no_zttp = pytest.mark.skipif(False, reason="zttp is installed")
+except ModuleNotFoundError:  # pragma: no cover
+    skip_if_no_zttp = pytest.mark.skipif(True, reason="zttp is not installed")
+
 if TYPE_CHECKING:
     from uvicorn.protocols.http.httptools_impl import HttpToolsProtocol
     from uvicorn.protocols.websockets.websockets_sansio_impl import WebSocketsSansIOProtocol
@@ -475,6 +482,32 @@ async def test_chunked_encoding_head_request(http_protocol_cls: type[HTTPProtoco
     await protocol.loop.run_one()
     assert b"HTTP/1.1 200 OK" in protocol.transport.buffer
     assert not protocol.transport.is_closing()
+
+
+@skip_if_no_zttp
+async def test_chunked_encoding_multiple_transfer_codings():
+    """A `chunked` coding declared alongside others must not be duplicated."""
+    app = Response(b"Hello, world!", status_code=200, headers={"transfer-encoding": "gzip, chunked"})
+
+    protocol = get_connected_protocol(app, ZttpProtocol)
+    protocol.data_received(SIMPLE_GET_REQUEST)
+    await protocol.loop.run_one()
+    assert b"HTTP/1.1 200 OK" in protocol.transport.buffer
+    assert protocol.transport.buffer.lower().count(b"transfer-encoding") == 1
+    assert b"0\r\n\r\n" in protocol.transport.buffer
+    assert not protocol.transport.is_closing()
+
+
+@skip_if_no_zttp
+async def test_connection_close_within_multiple_tokens():
+    """A `close` token in a multi-valued `Connection` header must close the connection."""
+    app = Response(b"Hello, world!", status_code=200, headers={"connection": "keep-alive, close"})
+
+    protocol = get_connected_protocol(app, ZttpProtocol)
+    protocol.data_received(SIMPLE_GET_REQUEST)
+    await protocol.loop.run_one()
+    assert b"HTTP/1.1 200 OK" in protocol.transport.buffer
+    assert protocol.transport.is_closing()
 
 
 async def test_pipelined_requests(http_protocol_cls: type[HTTPProtocol]):
